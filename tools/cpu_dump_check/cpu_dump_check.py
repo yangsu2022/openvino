@@ -62,7 +62,62 @@ def fill_tensors_with_random(input):
     a = rs.uniform(rand_min, rand_max, list(shape)).astype(dtype)
     return Tensor(a)
 
+def fill_tensors_from_image(input, input_file):
+    dtype = get_dtype(input.get_element_type())
+    shape = input.get_shape()
+
+    data = np.load(input_file, allow_pickle=True)
+    for itm in data.files:
+        print(itm)
+        print(data[itm])
+
+    return Tensor(data[data.files[0]].astype(dtype).reshape(shape))
+
 class IEB:
+    precision_table = {
+        10:(np.float32, 4),
+        40:(np.uint8, 1),
+        50:(np.int8, 1),
+        70:(np.int32, 4),
+        74:(np.uint32, 4),
+        72:(np.int64, 8),
+        73:(np.uint64, 8)
+    }
+
+    @classmethod
+    def dump(cls, ieb_file, nparray):
+        # b'IEB0', 256, 10, 4, 1, 32, 1104, 1104, 0, 0, 0, 255, 0, 0, 0, 72, 156008448, 0, 0
+        fmt = "@4sHBB7IB3BLLLL"
+
+        magic, ver = b'IEB0', 256
+        
+        precision = -1
+        for k,v in IEB.precision_table.items():
+            if (v[0] == nparray.dtype):
+                precision = k
+        
+        assert(precision >= 0)
+
+        ndims = len(nparray.shape)
+        dims = [0 for _ in range(7)]
+        for i, s in enumerate(nparray.shape):
+            dims[i] = s
+        scaling_axis = 255
+        reserved = [0,0,0]
+        data_offset = struct.calcsize(fmt)
+        data_size = np.prod(nparray.shape) * nparray.itemsize
+        scaling_data_offset = 0
+        scaling_data_size = 0
+        header = struct.pack(fmt, magic, ver, precision, ndims,
+                           dims[0], dims[1], dims[2], dims[3], dims[4], dims[5], dims[6],
+                           scaling_axis, reserved[0], reserved[1], reserved[2],
+                           data_offset, data_size, scaling_data_offset, scaling_data_size)
+        
+        with open(ieb_file,"wb") as f:
+            f.write(header)
+            f.write(nparray.tobytes())
+        return
+
     def __init__(self, ieb_file) -> None:
         with open(ieb_file,"rb") as f:
             data = f.read() # bytes
@@ -73,16 +128,8 @@ class IEB:
             self.scaling_axis,
             self.reserved0, self.reserved1, self.reserved2,
             self.data_offset, self.data_size, self.scaling_data_offset, self.scaling_data_size) = header
-            precision_table = {
-                10:(np.float32, 4),
-                40:(np.uint8, 1),
-                50:(np.int8, 1),
-                70:(np.int32, 4),
-                74:(np.uint32, 4),
-                72:(np.int64, 8),
-                73:(np.uint64, 8)
-            }
-            (dtype, type_size, ) = precision_table[self.precision]
+
+            (dtype, type_size, ) = IEB.precision_table[self.precision]
             count = self.data_size//type_size
             
             # recover the data as numpy array
@@ -100,16 +147,17 @@ class DumpIndex:
         (self.ExecIndex, self.Name, self.OriginalLayers, self.tag, self.itag, self.ieb_file) = args
 
 
-def dump_tensors(core, model, dump_dir = "./cpu_dump", device_target="CPU"):
+def dump_tensors(core, model, dump_dir = "./cpu_dump", dump_ports="OUT", device_target="CPU"):
     os.environ["OV_CPU_BLOB_DUMP_DIR"] = dump_dir
     os.environ["OV_CPU_BLOB_DUMP_FORMAT"] = "BIN"
-    os.environ["OV_CPU_BLOB_DUMP_NODE_PORTS"] = "OUT"
+    os.environ["OV_CPU_BLOB_DUMP_NODE_PORTS"] = dump_ports
     mkdirp(dump_dir)
 
     device_config = {"PERF_COUNT": "NO",
                 "AFFINITY": "CORE",
                 "PERFORMANCE_HINT_NUM_REQUESTS":0,
                 "PERFORMANCE_HINT":"",
+                "INFERENCE_PRECISION_HINT": "f32",
                 "NUM_STREAMS":1,
                 "INFERENCE_NUM_THREADS":1}
 
@@ -124,14 +172,31 @@ def dump_tensors(core, model, dump_dir = "./cpu_dump", device_target="CPU"):
         print(f"  {i}")
 
     print("infer with dump..")
-    req.infer(inputs)
+    
+    result = req.infer(inputs)
+
+    # dump result as ieb, so even no dump_ports, you can still know
+    # final correctness
+    print("Dump result as ieb...")
+    result_exec_id = 999900
+    for out, value in result.items():
+        names = [name.replace(":","_").replace("/","_") for name in out.names]
+        names.sort()
+        ieb_name = os.path.join(dump_dir, "#{}_{}.ieb".format(result_exec_id, "~".join(names)))
+        print("  {}..".format(ieb_name))
+        IEB.dump(ieb_name, value)
+        result_exec_id += 1
 
     runtime_func = exec_net.get_runtime_model()
-    xml_path = "runtime_func.xml"
-    bin_path = "runtime_func.bin"
+    base_name = dump_dir.split('/')
+    base_name = base_name[-1].split('\\')
+    xml_path = f"{base_name[-1]}.xml"
+    bin_path = f"{base_name[-1]}.bin"
     pass_manager = Manager()
     pass_manager.register_pass("Serialize", xml_path=xml_path, bin_path=bin_path)
-    pass_manager.run_passes(runtime_func)    
+    pass_manager.run_passes(runtime_func)
+    
+    print(f"{device_target} Runtime model (exec_graph) is serialized to {xml_path}.")
 
 
 def visualize_diff_abs(diff_abs):
@@ -199,7 +264,7 @@ def visualize_diff_abs(diff_abs):
 
     plt.show()
 
-def compare_dumps(model, atol, visualize, dump_dir1, dump_dir2):
+def compare_dumps(model, atol, rtol, visualize, dump_dir1, dump_dir2):
 
     output_tensors = []
     for out in model.outputs:
@@ -235,6 +300,7 @@ def compare_dumps(model, atol, visualize, dump_dir1, dump_dir2):
     for f1 in ieb_list1:
         f2 = get_match_ieb_file2(f1)
         if not f2:
+            print("{}[  SKIPPED   ]: not found {} in {} {}".format(Colors.YELLOW, f1[-1], dump_dir2, Colors.END))
             continue
         
         ieb_file1 = f1[-1]
@@ -247,9 +313,11 @@ def compare_dumps(model, atol, visualize, dump_dir1, dump_dir2):
             print("Skipped Input_Constant {ieb_file1} vs {ieb_file2}")
             continue
 
-        if not np.allclose(ieb1.value, ieb2.value, atol=atol):
-            diff_abs = np.abs(ieb1.value - ieb2.value)
-            atol_max = np.amax(diff_abs)
+        if not np.allclose(ieb1.value, ieb2.value, atol=atol, rtol=rtol):
+            diff_abs = np.abs(ieb1.value.astype('float32') - ieb2.value.astype('float32'))
+            thresh = atol + rtol * np.abs(ieb2.value)
+            idx = np.where(diff_abs >= thresh)
+            atol_max = np.amax(diff_abs[idx])
 
             if ieb1.value.dtype in MAX_atol:
                 if MAX_atol[ieb1.value.dtype] < atol_max:
@@ -265,14 +333,19 @@ def compare_dumps(model, atol, visualize, dump_dir1, dump_dir2):
             if (np.prod(diff_abs.shape) < 8):
                 info = "{} vs {}".format(ieb1.value.reshape(-1), ieb2.value.reshape(-1))
             
-            print("    {} {}    ({:.2e} ~ {:.2e})   @ mean:{:.2e} std:{:.2e}  detail: {}".format(
+            max_abs = np.amax(diff_abs[idx])
+            max_idx = np.where(diff_abs[idx] >= max_abs)
+            max_org = np.abs(ieb2.value)[idx][max_idx]
+            print("  {} {}  ({:.2e} ~ {:.2e}/{:.2e}={:.2e})  @ mean:{:.2e} std:{:.2e} detail: {}".format(
                     diff_abs.shape, diff_abs.dtype,
-                    np.amin(diff_abs), np.amax(diff_abs), np.mean(diff_abs), np.std(diff_abs), info))
+                    np.amin(diff_abs[idx]), max_abs,
+                    max_org[0], max_abs / (max_org[0] + 0.000001),
+                    np.mean(diff_abs[idx]), np.std(diff_abs[idx]), info))
 
             if (visualize):
                 visualize_diff_abs(diff_abs)
         else:
-            #print("{}[  OK     ]: {} {} {}".format(prefixOK, f1[-1], f2[-1], Colors.END))
+            print("{}[  OK     ]: {} {} {}".format(Colors.GREEN, f1[-1], f2[-1], Colors.END))
             pass
 
     print("============================================")
@@ -286,11 +359,20 @@ def compare_dump_file(ieb_file1, ieb_file2, visualize):
     ieb1 = IEB(ieb_file1)
     ieb2 = IEB(ieb_file2)
 
-    diff_abs = np.abs(ieb1.value - ieb2.value)
+    if ieb1.value.shape != ieb2.value.shape :
+        print(" Shape mismatch {} != {} , will compare in flatten.".format(ieb1.value.shape, ieb2.value.shape))
+        diff_abs = np.abs(ieb1.value.reshape(-1) - ieb2.value.reshape(-1))
+    else:
+        diff_abs = np.abs(ieb1.value - ieb2.value)
 
-    print("    {} {}    ({:.2e} ~ {:.2e})   @ mean:{:.2e} std:{:.2e} ".format(
+    max_abs = np.amax(diff_abs)
+    max_idx = np.where(diff_abs >= max_abs)
+    max_org = np.abs(ieb2.value)[max_idx]
+    print("  {} {}  ({:.2e} ~ {:.2e}/{:.2e}={:.2e})  @ mean:{:.2e} std:{:.2e} ".format(
             diff_abs.shape, diff_abs.dtype,
-            np.amin(diff_abs), np.amax(diff_abs), np.mean(diff_abs), np.std(diff_abs)))
+            np.amin(diff_abs), max_abs,
+            max_org[0], max_abs / (max_org[0] + 0.00001),
+            np.mean(diff_abs), np.std(diff_abs)))
 
     if (visualize):
         visualize_diff_abs(diff_abs)
@@ -299,7 +381,9 @@ def main():
     parser = argparse.ArgumentParser("cpu_cross_check")
     parser.add_argument("-m", type=str, default="", required=True, help="Model file path")
     parser.add_argument("-atol", type=float, default=1e-8, help="absolute error")
+    parser.add_argument("-rtol", type=float, default=1e-4, help="relative error")
     parser.add_argument("-v", action="store_true", help="visualize error")
+    parser.add_argument("-p", "--ports", type=str, default="OUT", help="dump ports: OUT | ALL")
     parser.add_argument("dumps", type=str, default="", nargs="+", help="dump folders or files")
     args = parser.parse_args()
 
@@ -308,11 +392,11 @@ def main():
     model = core.read_model(args.m)
 
     if len(args.dumps) == 1:
-        dump_tensors(core, model, args.dumps[0])
+        dump_tensors(core, model, args.dumps[0], args.ports)
     else:
         assert(len(args.dumps) == 2)
         if (os.path.isdir(args.dumps[0])):
-            compare_dumps(model, args.atol, args.v, args.dumps[0], args.dumps[1])
+            compare_dumps(model, args.atol, args.rtol, args.v, args.dumps[0], args.dumps[1])
         else:
             compare_dump_file(args.dumps[0], args.dumps[1], args.v)
 

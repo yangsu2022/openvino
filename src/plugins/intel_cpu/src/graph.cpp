@@ -434,6 +434,14 @@ void Graph::InitDescriptors() {
 
         OV_ITT_SCOPE_NEXT(FIRST_INFERENCE, taskChain, node->profiling.filterSupportedPrimitiveDescriptors);
         node->filterSupportedPrimitiveDescriptors();
+
+#ifdef CPU_DEBUG_CAPS
+        DEBUG_LOG("==================");
+        for (auto & pd : node->getSupportedPrimitiveDescriptors())
+            DEBUG_LOG("#", node->getExecIndex(),
+                      " ", node->getName(),
+                      "  SupportedPrimitiveDescriptor:\n", pd);
+#endif
     }
 
     for (auto &node : graphNodes) {
@@ -447,6 +455,7 @@ void Graph::InitOptimalPrimitiveDescriptors() {
     for (auto &node : graphNodes) {
         OV_ITT_SCOPE(FIRST_INFERENCE, itt::domains::intel_cpu_LT, node->profiling.initOptimalPrimitiveDescriptor);
         node->initOptimalPrimitiveDescriptor();
+        DEBUG_LOG("#", node->getExecIndex(), " ", node->getName(), "\n", *node->getSelectedPrimitiveDescriptor());
     }
 }
 
@@ -564,6 +573,7 @@ void Graph::InitEdges() {
     for (auto i = 0; i < numberOfEdges; i++) {
         auto edge = graphEdges[i];
         auto reorderStatus = graphEdges[i]->needReorder();
+        DEBUG_LOG(graphEdges[i]->name(), " reorderStatus = ", static_cast<int>(reorderStatus));
         if (reorderStatus == Edge::ReorderStatus::Regular) {
             Edge::ReorderStatus reorderStatusInternal = Edge::ReorderStatus::Regular;
             // Check if there is a reorder that needs the precision conversion
@@ -792,8 +802,7 @@ void Graph::CreatePrimitives() {
     OV_ITT_SCOPED_TASK(itt::domains::intel_cpu, "Graph::CreatePrimitives");
     for (auto& node : graphNodes) {
         OV_ITT_SCOPE(FIRST_INFERENCE, itt::domains::intel_cpu_LT, node->profiling.createPrimitive);
-        DEBUG_LOG("#", node->getExecIndex(), " ", node->getTypeStr(), " ", algToString(node->getAlgorithm()),
-                  " ", node->getName(), " ", node->getOriginalLayers());
+        DEBUG_LOG(*node);
         node->createPrimitive();
     }
 }
@@ -957,6 +966,7 @@ inline void Graph::ExecuteNode(const NodePtr& node, const dnnl::stream& stream) 
     } else {
         node->execute(stream);
     }
+    DEBUG_LOG(*node);
 }
 
 void Graph::Infer(InferRequestBase* request) {
@@ -1258,7 +1268,7 @@ void Graph::RemoveDroppedEdges() {
 }
 
 NodePtr Graph::InsertReorder(EdgePtr edge, std::string layerName, const MemoryDesc& inDesc, const MemoryDesc& outDesc,
-                                         bool isOptimized) {
+                                         bool isOptimized, const std::vector<int> & src_perm) {
     NodePtr newReorder(new node::Reorder(layerName, getEngine(), weightsCache));
     auto *reorderPtr = dynamic_cast<node::Reorder *>(newReorder.get());
     if (reorderPtr == nullptr) {
@@ -1266,6 +1276,11 @@ NodePtr Graph::InsertReorder(EdgePtr edge, std::string layerName, const MemoryDe
     }
     reorderPtr->setDescs(inDesc, outDesc);
     reorderPtr->setOptimized(isOptimized);
+    reorderPtr->setSrcPermutation(src_perm);
+
+    DEBUG_LOG(reorderPtr->getName(), " edge=", edge->name(), " isOptimized=", isOptimized);
+    DEBUG_LOG("    inDesc: ", inDesc.getShape().toString(), inDesc.getPrecision().name(), " ", inDesc.serializeFormat());
+    DEBUG_LOG("   outDesc: ", outDesc.getShape().toString(), outDesc.getPrecision().name(), " ", outDesc.serializeFormat());
 
     InsertNode(edge, newReorder, true);
 
