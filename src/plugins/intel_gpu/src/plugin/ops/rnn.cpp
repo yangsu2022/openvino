@@ -138,8 +138,9 @@ static void CreateLSTMSequenceOp(ProgramBuilder& p, const std::shared_ptr<ov::op
     std::vector<cldnn::activation_additional_params> activation_params;
     GetLSTMActivationParams(op, activations, activation_params);
     const float clip = op->get_clip();
-    OPENVINO_ASSERT(op->get_input_shape(2).size() == 3 && op->get_input_shape(3).size() == 1 && op->get_input_shape(4).size() == 3 &&
-        op->get_input_shape(5).size() == 3 && op->get_input_shape(6).size() == 2, "Wrong input shapes for LSTMSequence op ", op->get_friendly_name());
+    OPENVINO_ASSERT(op->get_input_partial_shape(2).size() == 3 && op->get_input_partial_shape(3).size() == 1 && op->get_input_partial_shape(4).size() == 3 &&
+        op->get_input_partial_shape(5).size() == 3 &&
+        op->get_input_partial_shape(6).size() == 2, "Wrong input shapes for LSTMSequence op ", op->get_friendly_name());
     auto direction = op->get_direction();
 
     OPENVINO_ASSERT(p.use_new_shape_infer());

@@ -580,41 +580,27 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
                     const auto &lstm_seq = ov::as_type_ptr<const ov::op::v5::LSTMSequence>(node);
 
                     auto &engine = m_context->get_engine();
-                    if (!cldnn::check_cm_jit_support(engine, config) || engine.get_device_info().arch != cldnn::gpu_arch::xe2 || !config.get_use_cm()) {
+                    std::cout << "jit support " << cldnn::check_cm_jit_support(engine, config) << std::endl;
+                    if (!cldnn::check_cm_jit_support(engine, config) || !config.get_use_cm()) {
                         return false;
                     }
-
+                    std::cout << "alive a" << std::endl;
                     if (lstm_seq->get_clip() > 0.f) {
                         return false;
                     }
-
+                    std::cout << "alive b" << std::endl;
                     const auto &activations = lstm_seq->get_activations();
                     if (activations.size() != 3 ||
                         activations[0].compare("sigmoid") != 0 || activations[1].compare("tanh") != 0 || activations[2].compare("tanh") != 0) {
                         return false;
                     }
-
+                    std::cout << "alive c" << std::endl;
                     if (lstm_seq->get_output_element_type(0) != ov::element::f16) {
-                        return false;
+                        //return false;
                     }
+                    std::cout << "alive d" << std::endl;
 
-                    if (lstm_seq->is_dynamic()) {
-                        return false;
-                    }
-                    const auto &input = lstm_seq->get_input_shape(0);
-                    const auto &output = lstm_seq->get_output_shape(0);
-                    if (input.size() != 3 || output.size() != 4) {
-                        return false;
-                    }
-                    auto batch_size = input[0];
-                    auto input_size = input[2];
-                    auto num_dir = output[1];
-                    auto hidden_size = output[3];
-
-                    if (hidden_size != 128 || batch_size != 1 || num_dir != 2 || (input_size != 64 && input_size != 256)) {
-                        return false;
-                    }
-
+                    std::cout << "good" << std::endl;
                     return true;
                 });
 

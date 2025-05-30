@@ -91,6 +91,7 @@ protected:
     static std::shared_ptr<dnnl::lstm_forward::primitive_desc> get_lstm_primitive_descriptor(const kernel_impl_params& impl_params, cldnn::engine& engine,
                                                                                              const dnnl::primitive_attr& attr,
                                                                                              ov::op::RecurrentSequenceDirection direction) {
+        std::cout << "getting lstm pd" << std::endl;
         auto prim = impl_params.typed_desc<lstm_seq>();
         auto num_dir = static_cast<size_t>(prim->num_directions());
         const auto& src_shape = impl_params.get_input_layout(0).get_shape();
