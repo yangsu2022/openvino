@@ -594,9 +594,9 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
                         activations[0].compare("sigmoid") != 0 || activations[1].compare("tanh") != 0 || activations[2].compare("tanh") != 0) {
                         return false;
                     }
-                    std::cout << "alive c" << std::endl;
+                    std::cout << "alive c" << lstm_seq->get_output_element_type(0) << std::endl;
                     if (lstm_seq->get_output_element_type(0) != ov::element::f16) {
-                        //return false;
+                        return false;
                     }
                     std::cout << "alive d" << std::endl;
 
