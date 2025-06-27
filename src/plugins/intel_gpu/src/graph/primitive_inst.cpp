@@ -2310,6 +2310,7 @@ memory::ptr primitive_inst::allocate_internal_buffer(const layout& layout, size_
 }
 
 void primitive_inst::allocate_internal_buffers(bool reset) {
+    std::cout << _impl << "_" << _outputs.empty() << "_" << _outputs[0] <<std::endl;
     if (_impl == nullptr || _outputs.empty() || _outputs[0] == nullptr)
         return;
     const auto& buffer_descs = _impl->get_internal_buffer_descs(*_impl_params);

@@ -59,7 +59,7 @@ protected:
 
     [[nodiscard]] DispatchDataFunc get_dispatch_data_func() const override {
         return DispatchDataFunc{[](const RuntimeParams& params, KernelData& kd, ImplRuntimeParams* rt_params) {
-            assert(!params.is_dynamic());
+            //assert(!params.is_dynamic());
             auto& wgs = kd.params.workGroups;
 
             const auto& ini_hidden_shape = params.input_layouts[1].get_shape();
@@ -72,7 +72,7 @@ protected:
             const size_t wg_n_hh = hidden_size * num_gates;
 
             const size_t sg_m_hh = 1;
-            const size_t sg_n_hh = 16;
+            const size_t sg_n_hh = 32;
 
             size_t matrix_m_hh = 1;
             size_t matrix_n_hh = hidden_size * num_gates;
@@ -134,7 +134,7 @@ protected:
             const auto hidden_size = ini_hidden_shape[2];
             const auto seq_len = out_shape[2];
             const auto num_dir = ini_hidden_shape[1];
-
+            std::cout << "seq len is : " << seq_len << std::endl;
             size_t matrix_m_ih = seq_len;
             size_t matrix_n_ih = hidden_size * num_gates;
 
@@ -160,12 +160,12 @@ protected:
 class LSTMImpl : public PrimitiveImplCM {
 public:
     DECLARE_OBJECT_TYPE_SERIALIZATION(ov::intel_gpu::cm::LSTMImpl)
-    Stage::Ptr lstm_gemm = make_stage<XetlaLSTMGemmGenerator>();
+    //Stage::Ptr lstm_gemm = make_stage<XetlaLSTMGemmGenerator>();
     Stage::Ptr lstm_loop = make_stage<XetlaLSTMLoopGenerator>();
 
     LSTMImpl() : PrimitiveImplOCL(LSTMSeqImplementationManager::get_type_info_static()) {}
     LSTMImpl(const program_node& node, const RuntimeParams& params) : LSTMImpl() {
-        add_stage(lstm_gemm, params);
+        //add_stage(lstm_gemm, params);
         add_stage(lstm_loop, params);
     }
     [[nodiscard]] std::unique_ptr<primitive_impl> clone() const override {
@@ -173,6 +173,7 @@ public:
     }
 
     [[nodiscard]] std::vector<BufferDescriptor> get_internal_buffer_descs(const RuntimeParams& params) const override {
+        std::cout << "begin of " << "get_internal_buffer_descs" << std::endl;
         const auto x_shape = params.input_layouts[0].get_shape();
         const auto ini_hidden_shape = params.input_layouts[1].get_shape();
         const auto out_shape = params.output_layouts[0].get_shape();
@@ -182,7 +183,7 @@ public:
         const auto hidden_size = ini_hidden_shape[2];
         const auto seq_len = out_shape[2];
         const auto num_dir = ini_hidden_shape[1];
-
+        std::cout << "buf size " << num_dir << "_" << seq_len << "_" << batch_size << "_" << hidden_size << "_" << num_gates << std::endl;
         auto buf_size = num_dir * seq_len * batch_size * hidden_size * num_gates;
         return {BufferDescriptor{buf_size, ov::element::f32}};
     }

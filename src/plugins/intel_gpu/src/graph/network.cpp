@@ -607,6 +607,7 @@ void network::allocate_primitives() {
     // allocate intermediate buffers
     for (auto const& node : po) {
         auto prim = _primitives[node->id()];
+        std::cout << "xxxxxx" << node->id() << std::endl;
         prim->allocate_internal_buffers();
     }
 }

@@ -45,7 +45,8 @@ _GENX_MAIN_ void KERNEL_NAME(dtype_a *x [[type("svmptr_t")]],
         dtype_c *hidden_history [[type("svmptr_t")]],
         dtype_c *hidden_state [[type("svmptr_t")]],
         dtype_c *cell_state [[type("svmptr_t")]]) {
-    printf("seq len %d\n", seq_lengths[0]);
+    printf("seq len %d\n", sequence_lengths[0]);
+
     sycl::nd_item<3> item;
     using loop_t = __xetla_kernel_lstm_loop<dtype_a, dtype_b, dtype_c,
             dtype_acc, INPUT_SIZE, HIDDEN_SIZE, directions, mem_layout_x,
@@ -56,7 +57,9 @@ _GENX_MAIN_ void KERNEL_NAME(dtype_a *x [[type("svmptr_t")]],
     }
    
     if constexpr (loop_t::slm_size != 0) { cm_slm_init(loop_t::slm_size); }
+    /*
     loop_t::run(item, x, initial_hidden_state, initial_cell_state, R,
             sequence_lengths, hidden_history, hidden_state, cell_state);
+    */
 }
 }
