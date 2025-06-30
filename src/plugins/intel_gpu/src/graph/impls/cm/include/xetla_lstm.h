@@ -342,7 +342,7 @@ struct __xetla_kernel_lstm_loop {
     static_assert(hidden_size % 4 == 0);
 
     static constexpr uint32_t SIMD = 16;
-    static constexpr uint32_t num_threads = 32;
+    static constexpr uint32_t num_threads = hidden_size / 8;
     static constexpr uint32_t gates = 4;
 
     static constexpr uint32_t wg_m = 1;

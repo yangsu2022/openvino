@@ -70,7 +70,8 @@ protected:
 
             const size_t wg_m_hh = 1;
             const size_t wg_n_hh = hidden_size * num_gates;
-
+            std::cout << "hidden_size * num_gates" << hidden_size << "*" <<  num_gates << std::endl;
+            std::cout << "num directions" << num_dir << std::endl;
             const size_t sg_m_hh = 1;
             const size_t sg_n_hh = 32;
 
@@ -160,12 +161,12 @@ protected:
 class LSTMImpl : public PrimitiveImplCM {
 public:
     DECLARE_OBJECT_TYPE_SERIALIZATION(ov::intel_gpu::cm::LSTMImpl)
-    //Stage::Ptr lstm_gemm = make_stage<XetlaLSTMGemmGenerator>();
+    Stage::Ptr lstm_gemm = make_stage<XetlaLSTMGemmGenerator>();
     Stage::Ptr lstm_loop = make_stage<XetlaLSTMLoopGenerator>();
 
     LSTMImpl() : PrimitiveImplOCL(LSTMSeqImplementationManager::get_type_info_static()) {}
     LSTMImpl(const program_node& node, const RuntimeParams& params) : LSTMImpl() {
-        //add_stage(lstm_gemm, params);
+        add_stage(lstm_gemm, params);
         add_stage(lstm_loop, params);
     }
     [[nodiscard]] std::unique_ptr<primitive_impl> clone() const override {

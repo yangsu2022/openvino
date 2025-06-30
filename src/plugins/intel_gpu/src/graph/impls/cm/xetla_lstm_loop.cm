@@ -57,9 +57,7 @@ _GENX_MAIN_ void KERNEL_NAME(dtype_a *x [[type("svmptr_t")]],
     }
    
     if constexpr (loop_t::slm_size != 0) { cm_slm_init(loop_t::slm_size); }
-    /*
     loop_t::run(item, x, initial_hidden_state, initial_cell_state, R,
             sequence_lengths, hidden_history, hidden_state, cell_state);
-    */
 }
 }
