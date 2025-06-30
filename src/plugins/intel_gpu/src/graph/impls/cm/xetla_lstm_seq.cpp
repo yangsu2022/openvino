@@ -184,6 +184,7 @@ public:
         const auto hidden_size = ini_hidden_shape[2];
         const auto seq_len = out_shape[2];
         const auto num_dir = ini_hidden_shape[1];
+
         auto buf_size = num_dir * seq_len * batch_size * hidden_size * num_gates;
         return {BufferDescriptor{buf_size, ov::element::f32}};
     }

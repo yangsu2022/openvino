@@ -42,9 +42,10 @@ struct LSTMSeqImplementationManager : public ImplementationManager {
 
         auto& engine = node.get_program().get_engine();
         const auto& config = node.get_program().get_config();
+        const auto& info = engine.get_device_info();
 
         // XeTLA LSTM optimized for Xe2 architectures
-        if (!check_cm_jit_support(engine, config) || !config.get_use_cm()) {
+        if (!check_cm_jit_support(engine, config) || info.arch != gpu_arch::xe2 || !config.get_use_cm()) {
             return false;
         }
 
@@ -64,7 +65,9 @@ struct LSTMSeqImplementationManager : public ImplementationManager {
         }
 
         auto in_layouts = node.get_input_layouts();
-
+        if (node.is_dynamic()) {
+            return false;
+        }
         const uint32_t expected_inputs = 7;
         if (in_layouts.size() != expected_inputs) {
             return false;
@@ -89,7 +92,12 @@ struct LSTMSeqImplementationManager : public ImplementationManager {
             }
         }
 
-        return true;
+        auto num_gates = 4;
+        auto batch_size = in_layouts[0].get_shape()[0];
+        auto input_size = in_layouts[0].get_shape()[2];
+        auto hidden_size = in_layouts[3].get_shape()[1] / num_gates;
+        auto num_dir = in_layouts[3].get_shape()[0];
+        return (hidden_size == 128 || hidden_size == 256) && batch_size == 1 && num_dir == 2 && (input_size == 64 || input_size == 256);
     }
 };
 
