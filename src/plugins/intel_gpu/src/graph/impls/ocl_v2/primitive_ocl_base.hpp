@@ -122,7 +122,6 @@ struct PrimitiveImplOCL : public cldnn::primitive_impl {
     }
 
     std::vector<cldnn::BufferDescriptor> get_internal_buffer_descs(const RuntimeParams& params) const override {
-         std::cout << "beg" << std::endl;
         return {};
     }
 
