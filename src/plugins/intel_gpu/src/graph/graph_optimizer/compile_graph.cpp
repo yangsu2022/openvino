@@ -38,7 +38,6 @@ void compile_graph::run(program& p) {
                 try {
                     const auto& params = node->get_kernel_impl_params();
                     auto shape_type = ImplementationManager::get_shape_type(*params);
-                    std::cout << "impl for node" << node->id() << "_" << shape_type << std::endl;
                     auto selected_impl_manager = node->type()->choose_impl(*node, shape_type);
                     std::string fail_reason;
                     try {

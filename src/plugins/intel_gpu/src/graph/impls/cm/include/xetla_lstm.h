@@ -338,7 +338,7 @@ template <typename dtype_a, typename dtype_b, typename dtype_c,
         mem_space mem_space_out, gpu_arch arch_tag>
 struct __xetla_kernel_lstm_loop {
     static_assert(directions == 1 || directions == 2);
-    //static_assert(hidden_size == 128);
+    static_assert(hidden_size == 128 || hidden_size == 256);
     static_assert(hidden_size % 4 == 0);
 
     static constexpr uint32_t SIMD = hidden_size == 256 ? 32 : 16;
