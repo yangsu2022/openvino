@@ -97,7 +97,7 @@ INSTANTIATE_TEST_SUITE_P(smoke_LSTMSequenceCommonClip, LSTMSequenceTest,
 
 std::vector<size_t> seq_lengths_cm{2};
 std::vector<size_t> batch_cm{1};
-std::vector<size_t> hidden_size_cm{256};
+std::vector<size_t> hidden_size_cm{128, 256};
 std::vector<size_t> input_size_cm{64, 256};
 std::vector<std::vector<std::string>> activations_cm = {{"sigmoid", "tanh", "tanh"}};
 std::vector<float> clip_cm{0};

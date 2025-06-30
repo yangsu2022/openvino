@@ -70,10 +70,13 @@ protected:
 
             const size_t wg_m_hh = 1;
             const size_t wg_n_hh = hidden_size * num_gates;
-            std::cout << "hidden_size * num_gates" << hidden_size << "*" <<  num_gates << std::endl;
-            std::cout << "num directions" << num_dir << std::endl;
             const size_t sg_m_hh = 1;
-            const size_t sg_n_hh = 32;
+            size_t SIMD_SIZE = 16;
+            if (hidden_size == 256) {
+                SIMD_SIZE = 32;
+            }
+
+            const size_t sg_n_hh = SIMD_SIZE;
 
             size_t matrix_m_hh = 1;
             size_t matrix_n_hh = hidden_size * num_gates;
@@ -107,7 +110,6 @@ protected:
             make_jit_constant("INPUT_SIZE", x_shape[2]),
             make_jit_constant("HIDDEN_SIZE", initial_hidden_shape[2]),
         });
-        std::cout << "input size is" << x_shape[2] << "hiddens hape is " << initial_hidden_shape[2] << std::endl;
         return jit_constants;
     }
 
@@ -135,7 +137,6 @@ protected:
             const auto hidden_size = ini_hidden_shape[2];
             const auto seq_len = out_shape[2];
             const auto num_dir = ini_hidden_shape[1];
-            std::cout << "seq len is : " << seq_len << std::endl;
             size_t matrix_m_ih = seq_len;
             size_t matrix_n_ih = hidden_size * num_gates;
 
@@ -174,7 +175,6 @@ public:
     }
 
     [[nodiscard]] std::vector<BufferDescriptor> get_internal_buffer_descs(const RuntimeParams& params) const override {
-        std::cout << "begin of " << "get_internal_buffer_descs" << std::endl;
         const auto x_shape = params.input_layouts[0].get_shape();
         const auto ini_hidden_shape = params.input_layouts[1].get_shape();
         const auto out_shape = params.output_layouts[0].get_shape();
@@ -184,7 +184,6 @@ public:
         const auto hidden_size = ini_hidden_shape[2];
         const auto seq_len = out_shape[2];
         const auto num_dir = ini_hidden_shape[1];
-        std::cout << "buf size " << num_dir << "_" << seq_len << "_" << batch_size << "_" << hidden_size << "_" << num_gates << std::endl;
         auto buf_size = num_dir * seq_len * batch_size * hidden_size * num_gates;
         return {BufferDescriptor{buf_size, ov::element::f32}};
     }
