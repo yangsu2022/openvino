@@ -583,9 +583,11 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
                     if (!cldnn::check_cm_jit_support(engine, config) || engine.get_device_info().arch != cldnn::gpu_arch::xe2 || !config.get_use_cm()) {
                         return false;
                     }
+
                     if (lstm_seq->get_clip() > 0.f) {
                         return false;
                     }
+
                     const auto &activations = lstm_seq->get_activations();
                     if (activations.size() != 3 ||
                         activations[0].compare("sigmoid") != 0 || activations[1].compare("tanh") != 0 || activations[2].compare("tanh") != 0) {
