@@ -44,7 +44,6 @@ _GENX_MAIN_ void KERNEL_NAME(
         int *sequence_lengths [[type("svmptr_t")]],
         dtype_acc *out [[type("svmptr_t")]]) {
     sycl::nd_item<3> item;
-    //printf("seq len %d \n", sequence_lengths[0]);
     using gemm_t = __xetla_kernel_lstm_gemm<dtype_a, dtype_b, dtype_c,
             dtype_acc, INPUT_SIZE, HIDDEN_SIZE, directions, mem_layout_x,
             mem_layout_w, mem_layout_out, mem_space_x, mem_space_w,

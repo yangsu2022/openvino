@@ -65,9 +65,6 @@ struct LSTMSeqImplementationManager : public ImplementationManager {
         }
 
         auto in_layouts = node.get_input_layouts();
-        if (node.is_dynamic()) {
-            return false;
-        }
         const uint32_t expected_inputs = 7;
         if (in_layouts.size() != expected_inputs) {
             return false;
@@ -93,11 +90,11 @@ struct LSTMSeqImplementationManager : public ImplementationManager {
         }
 
         auto num_gates = 4;
-        auto batch_size = in_layouts[0].get_shape()[0];
-        auto input_size = in_layouts[0].get_shape()[2];
-        auto hidden_size = in_layouts[3].get_shape()[1] / num_gates;
-        auto num_dir = in_layouts[3].get_shape()[0];
-        return (hidden_size == 128 || hidden_size == 256) && batch_size == 1 && num_dir == 2 && (input_size == 64 || input_size == 256);
+        auto batch_size = in_layouts[0].get_partial_shape()[0];
+        auto input_size = in_layouts[0].get_partial_shape()[2];
+        auto hidden_size = in_layouts[3].get_partial_shape()[1] / num_gates;
+        auto num_dir = in_layouts[3].get_partial_shape()[0];
+        return (hidden_size == 128 || hidden_size == 256) && num_dir == 2 && (input_size == 64 || input_size == 256);
     }
 };
 
