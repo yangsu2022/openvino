@@ -181,6 +181,15 @@ static constexpr Property<bool, ov::PropertyMutability::RW> validate_output_buff
 static constexpr Property<float, ov::PropertyMutability::RW> mem_pool_util_threshold{"GPU_MEM_POOL_UTIL_THRESHOLD"};
 static constexpr Property<bool, ov::PropertyMutability::RW> dump_src_after_exec{"GPU_DUMP_SRC_TENSORS_AFTER_EXEC"};
 static constexpr Property<bool, ov::PropertyMutability::RW> allow_bypass_xattn{"GPU_ALLOW_BYPASS_XATTN_EXEC"};
+
+// MoE OTD (Offload-To-Disk) properties
+// Enable/Disable MoE OTD feature for memory-constrained systems
+static constexpr Property<bool, ov::PropertyMutability::RW> moe_otd_enabled{"GPU_MOE_OTD_ENABLED"};
+// Path to the MoE weights file for OTD
+static constexpr Property<std::string, ov::PropertyMutability::RW> moe_weights_path{"GPU_MOE_WEIGHTS_PATH"};
+// Number of experts to keep resident in GPU memory
+static constexpr Property<int64_t, ov::PropertyMutability::RW> moe_resident_experts{"GPU_MOE_RESIDENT_EXPERTS"};
+
 }  // namespace ov::intel_gpu
 
 namespace cldnn {

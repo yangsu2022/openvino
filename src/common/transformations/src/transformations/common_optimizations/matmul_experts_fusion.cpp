@@ -26,9 +26,15 @@
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "transformations/utils/utils.hpp"
 
+#include <iostream>
+
+// MoE OTD Debug logging
+#define MOE_OTD_LOG(msg) std::cout << "[MOE-OTD] " << msg << std::endl
+
 using namespace ov::pass;
 ov::pass::FuseVectorizedMOE2GEMM::FuseVectorizedMOE2GEMM() {
     MATCHER_SCOPE(FuseVectorizedMOE2GEMM);
+    MOE_OTD_LOG("FuseVectorizedMOE2GEMM: Registering transformation pass");
 
     auto experts_input = pattern::wrap_type<ov::op::v1::Reshape>({pattern::any_input(), pattern::any_input()});
     auto tile = pattern::wrap_type<ov::op::v0::Tile>({experts_input, pattern::any_input()});
@@ -75,7 +81,10 @@ ov::pass::FuseVectorizedMOE2GEMM::FuseVectorizedMOE2GEMM() {
     matcher_pass_callback callback = [=](pattern::Matcher& m) {
         auto& pm = m.get_pattern_value_map();
 
+        MOE_OTD_LOG("FuseVectorizedMOE2GEMM: Pattern matched for node: " << m.get_match_root()->get_friendly_name());
+
         if (transformation_callback(m.get_match_root())) {
+            MOE_OTD_LOG("FuseVectorizedMOE2GEMM: Transformation callback returned false, skipping");
             return false;
         }
 
@@ -87,6 +96,10 @@ ov::pass::FuseVectorizedMOE2GEMM::FuseVectorizedMOE2GEMM() {
         auto down_proj_weight = pm.at(down_proj_matmul).get_node()->input_value(1).get_node_shared_ptr();
         auto down_proj_bias_node = pm.at(down_proj_add).get_node()->input_value(1).get_node_shared_ptr();
         auto topk_indices_node = pm.at(scatter_elements_update).get_node()->input_value(1);
+
+        // Log weight shapes
+        MOE_OTD_LOG("FuseVectorizedMOE2GEMM: gate_up_weight shape = " << gate_up_weight->get_output_partial_shape(0));
+        MOE_OTD_LOG("FuseVectorizedMOE2GEMM: down_proj_weight shape = " << down_proj_weight->get_output_partial_shape(0));
 
         ov::OutputVector moe_inputs = {experts_input_node,
                                        routing_weights_node,
@@ -111,10 +124,15 @@ ov::pass::FuseVectorizedMOE2GEMM::FuseVectorizedMOE2GEMM() {
         // Set expert_type
         config.expert_type = ov::op::internal::MOE::Expert_type::GEMM2_BIAS_SWIGLU_CLAMP;
 
+        MOE_OTD_LOG("FuseVectorizedMOE2GEMM: Creating MOE node with expert_type=GEMM2_BIAS_SWIGLU_CLAMP, alpha=" 
+                    << config.expert_alpha << ", beta=" << config.expert_beta);
+
         auto moe = std::make_shared<ov::op::internal::MOE>(moe_inputs, config);
         moe->set_friendly_name(m.get_match_root()->get_friendly_name());
         ov::copy_runtime_info(m.get_matched_nodes(), moe);
         ov::replace_node(m.get_match_root(), moe);
+
+        MOE_OTD_LOG("FuseVectorizedMOE2GEMM: Successfully fused to MOE node: " << moe->get_friendly_name());
 
         register_new_node(moe);
         return true;

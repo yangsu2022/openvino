@@ -15,8 +15,13 @@
 #include <intel_gpu/primitives/moe_gather.hpp>
 #include <intel_gpu/primitives/swiglu.hpp>
 #include <intel_gpu/primitives/eltwise.hpp>
+#include "intel_gpu/runtime/internal_properties.hpp"
 
 #include <limits>
+#include <iostream>
+
+// OTD Debug logging
+#define MOE_OTD_LOG(msg) std::cout << "[MOE-OTD] " << msg << std::endl
 
 namespace ov {
 namespace op {
@@ -62,8 +67,12 @@ static void CreateMOE3GemmFusedCompressedOp(ProgramBuilder& p, const std::shared
 }
 
 static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::op::internal::MOECompressed>& op) {
+    MOE_OTD_LOG("CreateMOECompressedOp: Entry point");
     auto inputs = p.GetInputInfo(op);
     auto& config = op->get_config();
+    MOE_OTD_LOG("CreateMOECompressedOp: num_expert=" << config.num_expert << ", hidden_size=" << config.hidden_size);
+    MOE_OTD_LOG("CreateMOECompressedOp: inter_size=" << config.inter_size << ", group_size=" << config.group_size);
+    MOE_OTD_LOG("CreateMOECompressedOp: top_k=" << config.top_k << ", expert_type=" << static_cast<int>(config.expert_type));
     std::vector<cldnn::input_info> input_infos;
     for (const auto& input : inputs) {
         input_infos.push_back(cldnn::input_info(input));
@@ -96,6 +105,7 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
         // Use moe_3gemm_fused_compressed to replace it.
     } else  {
         // Create GEMM2_BIAS_SWIGLU_CLAMP specific primitives
+        MOE_OTD_LOG("CreateMOECompressedOp: Processing GEMM2_BIAS_SWIGLU_CLAMP expert type");
         // input0 : input {#tokens, hidden_size}
         // input1 : topk_weight {#tokens, num_experts_per_token}
         // input2 : topk_idx {#tokens, num_experts_per_token}
@@ -111,6 +121,22 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
         // swiglu_with_clamp
         // moe_gemm_down + bias
         // moe_scatter_reduce
+
+        // Read OTD configuration from execution config
+        const auto& exec_config = p.get_config();
+        bool otd_enabled = exec_config.get_property(ov::intel_gpu::moe_otd_enabled.name()).as<bool>();
+        std::string otd_weights_path = exec_config.get_property(ov::intel_gpu::moe_weights_path.name()).as<std::string>();
+        int64_t otd_resident_experts = exec_config.get_property(ov::intel_gpu::moe_resident_experts.name()).as<int64_t>();
+
+        MOE_OTD_LOG("CreateMOECompressedOp: OTD config - enabled=" << otd_enabled 
+                    << ", weights_path=" << otd_weights_path 
+                    << ", resident_experts=" << otd_resident_experts);
+
+        // Static layer counter for tracking MoE layer index
+        static thread_local uint32_t moe_layer_counter = 0;
+        uint32_t current_layer_idx = moe_layer_counter++;
+        MOE_OTD_LOG("CreateMOECompressedOp: Current layer index = " << current_layer_idx);
+
         std::string prim_name_base = layer_type_name_ID(op);
         auto  moe_mask_gen_name = prim_name_base + "_moe_mask_gen";
         auto  moe_mask_gen_reshape_name = prim_name_base + "_moe_mask_gen_reshape";
@@ -126,6 +152,7 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
                                                      static_cast<int32_t>(config.num_expert),
                                                      static_cast<int32_t>(config.top_k));
         p.add_primitive(*op, moe_mask_gen_prim);
+        MOE_OTD_LOG("CreateMOECompressedOp: Created moe_mask_gen primitive: " << moe_mask_gen_name);
         auto moe_mask_gen_reshape_prim =
             cldnn::moe_mask_gen_reshape(moe_mask_gen_reshape_name,
                                         input_info(moe_mask_gen_prim, moe_mask_gen::MoEMaskGenOutputIdx::TOKENS_PER_EXPERT),
@@ -134,11 +161,13 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
                                         input_info(moe_mask_gen_prim, moe_mask_gen::MoEMaskGenOutputIdx::TOKENS_LENS_PER_EXPERT),
                                         input_info(moe_mask_gen_prim, moe_mask_gen::MoEMaskGenOutputIdx::NUM_ACTUALLY_USED_EXPERTS));
         p.add_primitive(*op, moe_mask_gen_reshape_prim);
+        MOE_OTD_LOG("CreateMOECompressedOp: Created moe_mask_gen_reshape primitive: " << moe_mask_gen_reshape_name);
         auto moe_gather_prim = cldnn::moe_gather(moe_gather_name,
                                                  input_infos[0],  // input
                                                  input_info(moe_mask_gen_reshape_name, moe_mask_gen_reshape::MoEMaskGenReshapeOutputIdx::TOKENS_PER_EXPERT),
                                                  config);
         p.add_primitive(*op, moe_gather_prim);
+        MOE_OTD_LOG("CreateMOECompressedOp: Created moe_gather primitive: " << moe_gather_name);
         std::vector<cldnn::input_info> moe_gemm_up_inputs = {
             input_info(moe_gather_name),  // topk_weight
             input_infos[3],  // compressed_weights_input_up
@@ -159,7 +188,27 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
         }
         auto moe_gemm_up = cldnn::moe_gemm(moe_gemm_up_name, moe_gemm_up_inputs, config);
         moe_gemm_up.has_bias = true;
+
+        // Configure OTD for up-projection
+        if (otd_enabled && !otd_weights_path.empty()) {
+            moe_gemm_up.otd_enabled = true;
+            moe_gemm_up.otd_weights_path = otd_weights_path;
+            moe_gemm_up.otd_resident_experts = otd_resident_experts;
+            moe_gemm_up.otd_layer_idx = current_layer_idx;
+            moe_gemm_up.otd_is_up_projection = true;
+            moe_gemm_up.otd_num_experts = static_cast<uint32_t>(config.num_expert);
+            MOE_OTD_LOG("CreateMOECompressedOp: OTD enabled for moe_gemm_up, layer=" << current_layer_idx);
+            MOE_OTD_LOG("CreateMOECompressedOp: moe_gemm_up primitive fields set:" 
+                        << " otd_enabled=" << moe_gemm_up.otd_enabled
+                        << ", otd_layer_idx=" << moe_gemm_up.otd_layer_idx
+                        << ", otd_is_up_projection=" << moe_gemm_up.otd_is_up_projection
+                        << ", otd_weights_path=" << moe_gemm_up.otd_weights_path
+                        << ", otd_num_experts=" << moe_gemm_up.otd_num_experts);
+            GPU_DEBUG_TRACE_DETAIL << "MOE OTD enabled for layer " << current_layer_idx << " up-projection\n";
+        }
+
         p.add_primitive(*op, moe_gemm_up);
+        MOE_OTD_LOG("CreateMOECompressedOp: Created moe_gemm_up primitive: " << moe_gemm_up_name);
 
         // gpt-oss swiglu pattern
         // config.expert_alpha : clamp_max
@@ -182,6 +231,7 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
                                              1.0f,                 // up_add_val
                                              cldnn::tensor());
         p.add_primitive(*op, moe_swiglu_prim);
+        MOE_OTD_LOG("CreateMOECompressedOp: Created swiglu primitive: " << moe_swiglu_name);
         std::vector<cldnn::input_info> moe_gemm_down_inputs = {
             input_info(moe_swiglu_name),
             input_infos[down_idx],  // compressed_weights_input_down
@@ -201,7 +251,27 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
 
         auto moe_gemm_down = cldnn::moe_gemm(moe_gemm_down_name, moe_gemm_down_inputs, config);
         moe_gemm_down.has_bias = true;
+
+        // Configure OTD for down-projection
+        if (otd_enabled && !otd_weights_path.empty()) {
+            moe_gemm_down.otd_enabled = true;
+            moe_gemm_down.otd_weights_path = otd_weights_path;
+            moe_gemm_down.otd_resident_experts = otd_resident_experts;
+            moe_gemm_down.otd_layer_idx = current_layer_idx;
+            moe_gemm_down.otd_is_up_projection = false;
+            moe_gemm_down.otd_num_experts = static_cast<uint32_t>(config.num_expert);
+            MOE_OTD_LOG("CreateMOECompressedOp: OTD enabled for moe_gemm_down, layer=" << current_layer_idx);
+            MOE_OTD_LOG("CreateMOECompressedOp: moe_gemm_down primitive fields set:" 
+                        << " otd_enabled=" << moe_gemm_down.otd_enabled
+                        << ", otd_layer_idx=" << moe_gemm_down.otd_layer_idx
+                        << ", otd_is_up_projection=" << moe_gemm_down.otd_is_up_projection
+                        << ", otd_weights_path=" << moe_gemm_down.otd_weights_path
+                        << ", otd_num_experts=" << moe_gemm_down.otd_num_experts);
+            GPU_DEBUG_TRACE_DETAIL << "MOE OTD enabled for layer " << current_layer_idx << " down-projection\n";
+        }
+
         p.add_primitive(*op, moe_gemm_down);
+        MOE_OTD_LOG("CreateMOECompressedOp: Created moe_gemm_down primitive: " << moe_gemm_down_name);
         auto moe_scatter_reduce_prim = cldnn::moe_scatter_reduction(moe_scatter_reduce_name,
                 input_info(moe_gemm_down_name),
                 input_infos[2],
@@ -212,6 +282,8 @@ static void CreateMOECompressedOp(ProgramBuilder& p, const std::shared_ptr<ov::o
                 input_info(moe_mask_gen_reshape_name, moe_mask_gen_reshape::MoEMaskGenReshapeOutputIdx::EXPERTS_ID),
                 config);
         p.add_primitive(*op, moe_scatter_reduce_prim);
+        MOE_OTD_LOG("CreateMOECompressedOp: Created moe_scatter_reduction primitive: " << moe_scatter_reduce_name);
+        MOE_OTD_LOG("CreateMOECompressedOp: Layer " << current_layer_idx << " primitives creation completed");
     }
 }
 REGISTER_FACTORY_IMPL(internal, MOE3GemmFusedCompressed);

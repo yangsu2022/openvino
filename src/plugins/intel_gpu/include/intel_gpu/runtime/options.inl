@@ -99,3 +99,8 @@ OV_CONFIG_DEBUG_OPTION(ov::intel_gpu, dry_run_path, "", "Enables mode which part
 OV_CONFIG_DEBUG_OPTION(ov::intel_gpu, validate_output_buffer, false, "Validate output buffers of all layers which have fp16 data-type to find 'inf' and 'nan' value.")
 OV_CONFIG_DEBUG_OPTION(ov::intel_gpu, dynamic_quantization_bisect, std::numeric_limits<int64_t>::max(), "Apply dynamic quantization only up to this count")
 OV_CONFIG_DEBUG_OPTION(ov::intel_gpu, dynamic_quantization_single, -1, "Apply dynamic quantization only to this index")
+
+// MoE OTD (Offload-To-Disk) options
+OV_CONFIG_RELEASE_OPTION(ov::intel_gpu, moe_otd_enabled, false, "Enable MoE Offload-To-Disk feature for memory-constrained systems")
+OV_CONFIG_RELEASE_OPTION(ov::intel_gpu, moe_weights_path, "", "Path to the MoE weights file for OTD loading")
+OV_CONFIG_RELEASE_OPTION(ov::intel_gpu, moe_resident_experts, 0, "Number of experts to keep resident in GPU memory (0 = auto)")

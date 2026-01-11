@@ -6,6 +6,10 @@
 
 #include <limits>
 #include <memory>
+#include <iostream>
+
+// MoE OTD Debug logging
+#define MOE_OTD_LOG(msg) std::cout << "[MOE-OTD] " << msg << std::endl
 
 #include "intel_gpu/op/moe_compressed.hpp"
 #include "openvino/core/graph_util.hpp"
@@ -118,6 +122,7 @@ namespace ov::intel_gpu {
     auto gemm3_transpose_zp_##SUFFIX = std::make_shared<ov::op::v1::Transpose>(gemm3_zp_reshape_##SUFFIX, gemm3_transpose_const_##SUFFIX);
 
 ConvertMOEToMOECompressed::ConvertMOEToMOECompressed(bool is_pa) {
+    MOE_OTD_LOG("ConvertMOEToMOECompressed: Registering transformation pass (is_pa=" << is_pa << ")");
     // gemm3 pattern start
     MOE_COMPRESSED_WEIGHT_GEMM3_PATTERN(gate);
     MOE_COMPRESSED_WEIGHT_GEMM3_PATTERN(up);
@@ -176,8 +181,11 @@ ConvertMOEToMOECompressed::ConvertMOEToMOECompressed(bool is_pa) {
 
         auto moe = ov::as_type_ptr<ov::op::internal::MOE>(pattern_map.at(moe_root).get_node_shared_ptr());
         if (!moe || transformation_callback(moe)) {
+            MOE_OTD_LOG("ConvertMOEToMOECompressed: MOE node not found or callback returned false");
             return false;
         }
+
+        MOE_OTD_LOG("ConvertMOEToMOECompressed: Processing MOE node: " << moe->get_friendly_name());
         if (moe->get_config().expert_type == ov::op::internal::MOE::Expert_type::GEMM3_SWIGLU) {
             auto wei_partial_shape = pattern_map.at(gemm3_compressed_weights_m_up).get_partial_shape();
             if (!wei_partial_shape.is_static()) {
@@ -240,6 +248,7 @@ ConvertMOEToMOECompressed::ConvertMOEToMOECompressed(bool is_pa) {
             ov::copy_runtime_info(moe, moe_compressed);
             ov::replace_node(moe, moe_compressed);
         } else if (moe->get_config().expert_type == ov::op::internal::MOE::Expert_type::GEMM2_BIAS_SWIGLU_CLAMP) {
+            MOE_OTD_LOG("ConvertMOEToMOECompressed: Processing GEMM2_BIAS_SWIGLU_CLAMP expert_type");
             OutputVector args;
             auto topk_indice_node = pattern_map.at(topk_indices_gemm2_m);
             auto weight_up_node = pattern_map.at(compressed_weights_input_m_up);
@@ -253,6 +262,16 @@ ConvertMOEToMOECompressed::ConvertMOEToMOECompressed(bool is_pa) {
             auto weight_down_shape = pattern_map.at(compressed_weights_input_m_down).get_shape();
             auto bias_shape = pattern_map.at(bias_up_gemm2_m).get_node_shared_ptr()->get_shape();
             auto scale_shape = pattern_map.at(mul_const_m_up).get_shape();
+
+            MOE_OTD_LOG("ConvertMOEToMOECompressed: weight_up shape = [" 
+                        << weight_shape[0] << ", " << weight_shape[1] << ", " 
+                        << (weight_shape.size() > 2 ? std::to_string(weight_shape[2]) : "N/A") << ", "
+                        << (weight_shape.size() > 3 ? std::to_string(weight_shape[3]) : "N/A") << "]");
+            MOE_OTD_LOG("ConvertMOEToMOECompressed: weight_down shape = [" 
+                        << weight_down_shape[0] << ", " << weight_down_shape[1] << ", " 
+                        << (weight_down_shape.size() > 2 ? std::to_string(weight_down_shape[2]) : "N/A") << ", "
+                        << (weight_down_shape.size() > 3 ? std::to_string(weight_down_shape[3]) : "N/A") << "]");
+
             // Weight, scale, zp are assumed to be transposed
             // W     : [num_experts, N, K]
             // scale : [num_experts, N, K / group_size, 1]
@@ -290,10 +309,19 @@ ConvertMOEToMOECompressed::ConvertMOEToMOECompressed(bool is_pa) {
                 OPENVINO_THROW("gemm_down has no zp while gemm_up has zp!");
             }
             args.push_back(pattern_map.at(bias_down_gemm2_m));
+
+            MOE_OTD_LOG("ConvertMOEToMOECompressed: Creating MOECompressed with config:");
+            MOE_OTD_LOG("  num_expert=" << config.num_expert << ", hidden_size=" << config.hidden_size);
+            MOE_OTD_LOG("  inter_size=" << config.inter_size << ", group_size=" << config.group_size);
+            MOE_OTD_LOG("  top_k=" << config.top_k << ", has_zp=" << config.has_zp);
+            MOE_OTD_LOG("  args count=" << args.size());
+
             auto moe_compressed = std::make_shared<ov::intel_gpu::op::MOECompressed>(args, config);
             moe_compressed->set_friendly_name(moe->get_friendly_name());
             ov::copy_runtime_info(moe, moe_compressed);
             ov::replace_node(moe, moe_compressed);
+
+            MOE_OTD_LOG("ConvertMOEToMOECompressed: Successfully created MOECompressed: " << moe_compressed->get_friendly_name());
         } else {
             OPENVINO_THROW("Unsupported MOE expert type in ConvertMOEToMOECompressed");
         }

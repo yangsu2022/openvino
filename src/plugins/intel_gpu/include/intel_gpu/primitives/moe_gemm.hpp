@@ -49,11 +49,25 @@ struct moe_gemm : public primitive_base<moe_gemm> {
     int32_t num_experts_per_token = 0;
     bool has_batch_dim = true;
 
+    // OTD (Offload-To-Disk) parameters
+    bool otd_enabled = false;                // Whether OTD is enabled for this primitive
+    std::string otd_weights_path;            // Path to the weights file on disk
+    int64_t otd_resident_experts = 0;        // Number of experts to keep in GPU memory
+    uint32_t otd_layer_idx = 0;              // Layer index for OTD weight lookup
+    bool otd_is_up_projection = true;        // True for up-projection, false for down-projection
+    size_t otd_expert_weight_size = 0;       // Size of each expert's weight in bytes
+    size_t otd_expert_scale_size = 0;        // Size of each expert's scale in bytes
+    size_t otd_expert_bias_size = 0;         // Size of each expert's bias in bytes
+    uint32_t otd_num_experts = 0;            // Total number of experts
+
     size_t hash() const override {
         size_t seed = primitive::hash();
         seed = hash_combine(seed, has_bias);
         seed = hash_combine(seed, num_experts_per_token);
         seed = hash_combine(seed, has_batch_dim);
+        seed = hash_combine(seed, otd_enabled);
+        seed = hash_combine(seed, otd_layer_idx);
+        seed = hash_combine(seed, otd_is_up_projection);
         return seed;
     }
 
@@ -63,7 +77,10 @@ struct moe_gemm : public primitive_base<moe_gemm> {
         auto rhs_casted = downcast<const moe_gemm>(rhs);
         return has_bias == rhs_casted.has_bias &&
                num_experts_per_token == rhs_casted.num_experts_per_token &&
-               has_batch_dim == rhs_casted.has_batch_dim;
+               has_batch_dim == rhs_casted.has_batch_dim &&
+               otd_enabled == rhs_casted.otd_enabled &&
+               otd_layer_idx == rhs_casted.otd_layer_idx &&
+               otd_is_up_projection == rhs_casted.otd_is_up_projection;
     }
 
     void save(BinaryOutputBuffer& ob) const override {
@@ -71,6 +88,22 @@ struct moe_gemm : public primitive_base<moe_gemm> {
         ob << has_bias;
         ob << num_experts_per_token;
         ob << has_batch_dim;
+        ob << otd_enabled;
+        ob << otd_weights_path;
+        ob << otd_resident_experts;
+        ob << otd_layer_idx;
+        ob << otd_is_up_projection;
+        ob << otd_expert_weight_size;
+        ob << otd_expert_scale_size;
+        ob << otd_expert_bias_size;
+        ob << otd_num_experts;
+        // Log OTD serialization
+        if (otd_enabled) {
+            std::cerr << "[MOE-OTD] moe_gemm::save: Serializing OTD config - enabled=" << otd_enabled 
+                      << ", layer=" << otd_layer_idx 
+                      << ", projection=" << (otd_is_up_projection ? "up" : "down") 
+                      << ", path=" << otd_weights_path << std::endl;
+        }
     }
 
     void load(BinaryInputBuffer& ib) override {
@@ -78,6 +111,22 @@ struct moe_gemm : public primitive_base<moe_gemm> {
         ib >> has_bias;
         ib >> num_experts_per_token;
         ib >> has_batch_dim;
+        ib >> otd_enabled;
+        ib >> otd_weights_path;
+        ib >> otd_resident_experts;
+        ib >> otd_layer_idx;
+        ib >> otd_is_up_projection;
+        ib >> otd_expert_weight_size;
+        ib >> otd_expert_scale_size;
+        ib >> otd_expert_bias_size;
+        ib >> otd_num_experts;
+        // Log OTD deserialization
+        if (otd_enabled) {
+            std::cerr << "[MOE-OTD] moe_gemm::load: Deserialized OTD config - enabled=" << otd_enabled 
+                      << ", layer=" << otd_layer_idx 
+                      << ", projection=" << (otd_is_up_projection ? "up" : "down") 
+                      << ", path=" << otd_weights_path << std::endl;
+        }
     }
 };
 }
