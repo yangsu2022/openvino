@@ -166,16 +166,21 @@ bool MoEExpertWeightManager::read_file_header() {
 
 bool MoEExpertWeightManager::allocate_buffers() {
     // Determine number of resident experts
+    // With global expert IDs, we can cache experts across ALL layers (768 total = 24 layers × 32 experts)
+    // So the cap should be total experts, not per-layer experts
+    int64_t total_experts = static_cast<int64_t>(m_header.num_layers) * m_header.num_experts_per_layer;
     int64_t resident_experts = m_config.resident_experts;
     if (resident_experts <= 0) {
-        // Auto mode: use half of the experts or minimum 8
-        resident_experts = std::max(8, static_cast<int>(m_header.num_experts_per_layer / 2));
+        // Auto mode: use half of all experts or minimum 8
+        resident_experts = std::max(8LL, total_experts / 2);
     }
-    resident_experts = std::min(resident_experts, static_cast<int64_t>(m_header.num_experts_per_layer));
+    // Cap at total experts (not per-layer experts!) since we use global IDs
+    resident_experts = std::min(resident_experts, total_experts);
 
-    GPU_DEBUG_TRACE_DETAIL << "MoEExpertWeightManager: Allocating buffers for " << resident_experts << " resident experts\n";
+    GPU_DEBUG_TRACE_DETAIL << "MoEExpertWeightManager: Allocating buffers for " << resident_experts << " resident experts (global)\n";
     MOE_OTD_LOG("allocate_buffers: resident_experts=" << resident_experts 
-                << " (config=" << m_config.resident_experts << ", auto=" << (m_config.resident_experts <= 0 ? "yes" : "no") << ")");
+                << " (config=" << m_config.resident_experts << ", total=" << total_experts 
+                << ", auto=" << (m_config.resident_experts <= 0 ? "yes" : "no") << ")");
 
     // Calculate buffer sizes
     size_t up_weight_buffer_size = resident_experts * m_header.expert_up_weight_size;
@@ -357,8 +362,8 @@ void MoEExpertWeightManager::load_experts(uint32_t layer_idx,
     MOE_OTD_LOG("<<< load_experts EXIT: Successfully loaded " << expert_ids.size() << " experts for layer " << layer_idx);
 }
 
-void MoEExpertWeightManager::load_expert_to_host(uint32_t layer_idx, int32_t expert_id, bool is_up_projection) {
-    MOE_OTD_LOG("            >>> load_expert_to_host ENTRY: layer=" << layer_idx << ", expert=" << expert_id << ", proj=" << (is_up_projection ? "up" : "down"));
+void MoEExpertWeightManager::load_expert_to_host(uint32_t layer_idx, int32_t global_expert_id, bool is_up_projection) {
+    MOE_OTD_LOG("            >>> load_expert_to_host ENTRY: layer=" << layer_idx << ", global_expert_id=" << global_expert_id << ", proj=" << (is_up_projection ? "up" : "down"));
     
     if (!m_weights_file || !m_weights_file->is_open()) {
         MOE_OTD_LOG("            [ERROR] Weights file not open!");
@@ -366,9 +371,14 @@ void MoEExpertWeightManager::load_expert_to_host(uint32_t layer_idx, int32_t exp
     }
     MOE_OTD_LOG("            [1] Weights file is open");
 
+    // Convert global expert ID back to local ID for array indexing
+    // Global ID = layer_idx * 32 + local_id, so local_id = global_id % 32
+    int32_t local_expert_id = global_expert_id % 32;
+    MOE_OTD_LOG("            [1.5] Converted global_expert_id=" << global_expert_id << " to local_expert_id=" << local_expert_id << " for layer " << layer_idx);
+
     const auto& layer_info = m_layer_infos[layer_idx];
     const auto& weight_desc = is_up_projection ? 
-        layer_info.up_weights[expert_id] : layer_info.down_weights[expert_id];
+        layer_info.up_weights[local_expert_id] : layer_info.down_weights[local_expert_id];
     MOE_OTD_LOG("            [2] Got weight descriptor: offset=" << weight_desc.offset << ", size=" << weight_desc.size << " bytes (" << (weight_desc.size/1024.0/1024.0) << " MB)");
     MOE_OTD_LOG("            [3] Host staging buffer size: " << m_host_staging_buffer.size() << " bytes");
     

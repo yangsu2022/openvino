@@ -192,27 +192,70 @@ public:
         }
 
         MOE_OTD_LOG("load_otd_experts_if_needed: [7] Reading expert IDs from memory...");
-        std::vector<int32_t> expert_ids;
+        std::vector<int32_t> expert_ids_raw;  // May contain duplicates
+        std::vector<int32_t> expert_ids;      // Unique expert IDs
+        std::vector<int32_t> global_expert_ids;  // Global expert IDs (layer_idx * 32 + local_id)
         {
             cldnn::mem_lock<int32_t, cldnn::mem_lock_type::read> lock(experts_ids_mem, stream);
             auto shape = experts_ids_mem->get_layout().get_shape();
-            size_t num_experts = shape[0];
-            MOE_OTD_LOG("load_otd_experts_if_needed: [8] num_experts=" << num_experts);
-            expert_ids.reserve(num_experts);
-            for (size_t i = 0; i < num_experts; ++i) {
-                expert_ids.push_back(lock[i]);
+            size_t num_expert_selections = shape[0];  // Total number of expert selections (tokens × top-k)
+            MOE_OTD_LOG("load_otd_experts_if_needed: [8] Total expert selections (raw)=" << num_expert_selections);
+            expert_ids_raw.reserve(num_expert_selections);
+            for (size_t i = 0; i < num_expert_selections; ++i) {
+                expert_ids_raw.push_back(lock[i]);
+            }
+            
+            // Remove duplicates to get unique expert IDs
+            std::unordered_set<int32_t> unique_set(expert_ids_raw.begin(), expert_ids_raw.end());
+            expert_ids.assign(unique_set.begin(), unique_set.end());
+            
+            // Convert local expert IDs to global IDs for statistical analysis
+            // Global expert ID = layer_idx * 32 + local_expert_id
+            int32_t global_offset = m_otd_layer_idx * 32;
+            global_expert_ids.reserve(expert_ids.size());
+            for (int32_t local_id : expert_ids) {
+                global_expert_ids.push_back(global_offset + local_id);
             }
         }
-        MOE_OTD_LOG("load_otd_experts_if_needed: [9] Read " << expert_ids.size() << " expert IDs");
+        MOE_OTD_LOG("load_otd_experts_if_needed: [9] Total selections=" << expert_ids_raw.size() 
+                    << ", Unique experts=" << expert_ids.size() 
+                    << " (dedup ratio: " << (expert_ids_raw.size() / (float)expert_ids.size()) << "x)");
+        
+        // Log all unique expert IDs (sorted for better readability)
+        // Show both local IDs (used by model) and global IDs (for statistical analysis)
+        std::vector<int32_t> sorted_local_ids = expert_ids;
+        std::sort(sorted_local_ids.begin(), sorted_local_ids.end());
+        
+        std::vector<int32_t> sorted_global_ids = global_expert_ids;
+        std::sort(sorted_global_ids.begin(), sorted_global_ids.end());
+        
+        std::ostringstream local_ids_str, global_ids_str;
+        local_ids_str << "[";
+        global_ids_str << "[";
+        for (size_t i = 0; i < sorted_local_ids.size(); ++i) {
+            if (i > 0) {
+                local_ids_str << ", ";
+                global_ids_str << ", ";
+            }
+            local_ids_str << sorted_local_ids[i];
+            global_ids_str << sorted_global_ids[i];
+        }
+        local_ids_str << "]";
+        global_ids_str << "]";
+        MOE_OTD_LOG("load_otd_experts_if_needed: [9.1] Local expert IDs (used by model): " << local_ids_str.str());
+        MOE_OTD_LOG("load_otd_experts_if_needed: [9.2] Global expert IDs (for statistics): " << global_ids_str.str());
 
-        MOE_OTD_LOG("load_otd_experts_if_needed: [10] Loading " << expert_ids.size() 
+        MOE_OTD_LOG("load_otd_experts_if_needed: [10] Loading " << global_expert_ids.size() 
                     << " experts for layer " << m_otd_layer_idx);
-        GPU_DEBUG_TRACE_DETAIL << "MoEGemmImpl: Loading " << expert_ids.size() << " experts for layer " 
+        GPU_DEBUG_TRACE_DETAIL << "MoEGemmImpl: Loading " << global_expert_ids.size() << " experts for layer " 
                                << m_otd_layer_idx << " (" << (m_otd_is_up_projection ? "up" : "down") << ")\n";
 
-        // Load the required experts
-        MOE_OTD_LOG("load_otd_experts_if_needed: [11] Calling otd_manager->load_experts()...");
-        otd_manager->load_experts(m_otd_layer_idx, expert_ids, stream, m_otd_is_up_projection);
+        // CRITICAL FIX: Pass GLOBAL expert IDs (not local) to load_experts()
+        // This ensures LRU cache keys are unique across all layers
+        // Previously: Layer 0 expert_id=5 and Layer 1 expert_id=5 would collide
+        // Now: Layer 0 uses global_id=5, Layer 1 uses global_id=37 (32+5)
+        MOE_OTD_LOG("load_otd_experts_if_needed: [11] Calling otd_manager->load_experts() with GLOBAL expert IDs...");
+        otd_manager->load_experts(m_otd_layer_idx, global_expert_ids, stream, m_otd_is_up_projection);
         MOE_OTD_LOG("load_otd_experts_if_needed: [12] otd_manager->load_experts() RETURNED");
         MOE_OTD_LOG("<<< load_otd_experts_if_needed: EXIT (success)");
     }
