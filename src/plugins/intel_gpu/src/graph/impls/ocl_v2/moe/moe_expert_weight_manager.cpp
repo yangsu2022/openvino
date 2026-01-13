@@ -327,27 +327,30 @@ void MoEExpertWeightManager::load_experts(uint32_t layer_idx,
     for (size_t i = 0; i < expert_ids.size(); ++i) {
         int32_t expert_id = expert_ids[i];
         MOE_OTD_LOG("    [5." << i << "] Processing expert_id=" << expert_id);
-        // Check if expert is already loaded
+        
+        // CRITICAL FIX: Use LOCAL expert ID as slot index, not global slot allocation
+        // The kernel indexes weights by local expert_id (0-31), so we MUST store
+        // each expert at its local_id position in the buffer.
+        // Global expert ID = layer_idx * 32 + local_id, so local_id = global_id % 32
+        int32_t local_expert_id = expert_id % 32;
+        int32_t slot_idx = local_expert_id;  // Store at the expert's local ID position
+        
+        // Check if this expert is already loaded at the correct slot
         auto it = expert_to_slot.find(expert_id);
-        if (it != expert_to_slot.end()) {
-            // Update access time for LRU
-            MOE_OTD_LOG("        [5." << i << ".a] Expert " << expert_id << " already loaded in slot " << it->second << ", updating access time");
-            slot_access_time[it->second] = ++m_access_counter;
+        if (it != expert_to_slot.end() && it->second == slot_idx) {
+            // Expert is already loaded at the correct position
+            MOE_OTD_LOG("        [5." << i << ".a] Expert " << expert_id << " (local=" << local_expert_id << ") already loaded at slot " << slot_idx << ", updating access time");
+            slot_access_time[slot_idx] = ++m_access_counter;
             continue;
         }
-        MOE_OTD_LOG("        [5." << i << ".b] Expert " << expert_id << " NOT loaded, need to load");
+        MOE_OTD_LOG("        [5." << i << ".b] Expert " << expert_id << " (local=" << local_expert_id << ") NOT loaded at slot " << slot_idx << ", need to load");
 
-        // Need to load this expert
-        MOE_OTD_LOG("        [5." << i << ".c] Calling find_available_slot()...");
-        int32_t slot_idx = find_available_slot(is_up_projection);
-        MOE_OTD_LOG("        [5." << i << ".c] Got slot_idx=" << slot_idx);
-        
-        // If slot was occupied, remove the old mapping
+        // If slot was occupied by a different expert, remove the old mapping
         int32_t old_expert = slot_to_expert[slot_idx];
-        if (old_expert >= 0) {
+        if (old_expert >= 0 && old_expert != expert_id) {
             MOE_OTD_LOG("        [5." << i << ".d] Slot " << slot_idx << " was occupied by expert " << old_expert << ", evicting");
             expert_to_slot.erase(old_expert);
-        } else {
+        } else if (old_expert < 0) {
             MOE_OTD_LOG("        [5." << i << ".d] Slot " << slot_idx << " is empty");
         }
 
