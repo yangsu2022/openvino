@@ -678,6 +678,117 @@ python test-resident-experts-performance.py
 
 ---
 
+## Bug Fixes (January 13, 2026)
+
+### Fix 1: OTD Buffer Not Connected to Kernel Execution
+
+**Problem:** The OTD weight buffers (`m_up_weight_buffer`, `m_down_weight_buffer`) were loaded from disk but never used by the kernel. The kernel continued using the original (empty or placeholder) weight input.
+
+**Root Cause:** Missing connection between `load_experts()` output and kernel execution path. The `get_weight_buffer()` method existed but was never called.
+
+**Solution (commit 7ad4534b4b):**
+- Added `get_arguments()` override in `MoEGemmImpl` class to replace weight input with OTD buffer
+- Cache the OTD buffer pointer after `load_experts()` returns
+- Replace `args.inputs[WEIGHT]` with the cached OTD buffer before kernel execution
+
+**Code Changes (`moe_gemm.cpp`):**
+```cpp
+// Added get_arguments() override
+[[nodiscard]] cldnn::kernel_arguments_data get_arguments(const cldnn::primitive_inst& instance) const override {
+    cldnn::kernel_arguments_data args = PrimitiveImplOCL::get_arguments(instance);
+    
+    if (m_otd_enabled && m_otd_weight_buffer) {
+        // Replace the weight input with the OTD buffer containing loaded experts
+        args.inputs[moe_gemm::MoEGemmInputIdx::WEIGHT] = m_otd_weight_buffer;
+    }
+    return args;
+}
+```
+
+### Fix 2: Slot Indexing Mismatch Causing Garbage Output
+
+**Problem:** After Fix 1, output was garbage characters instead of coherent text. The kernel uses local expert IDs (0-31) to index weights, but OTD stored experts at arbitrary global slot positions (0-599).
+
+**Example from log:**
+```
+Layer 23 needed local experts: [2, 7, 21, 22]
+OTD stored them at slots: [512, 517, 525, 526]  ← MISMATCH!
+Kernel accessed weight[2*stride], weight[7*stride]... → wrong data!
+```
+
+**Root Cause:** The kernel accesses `weight[expert_id * stride]` where `expert_id` is the local ID (0-31). But OTD's `find_available_slot()` stored experts at arbitrary global positions.
+
+**Solution (commit e9a37ba658):**
+- Changed slot calculation from `find_available_slot()` to `local_expert_id = expert_id % 32`
+- Store each expert at its local ID position within the buffer
+
+### Fix 3: Layer-to-Layer Cache Thrashing (100% Eviction Rate)
+
+**Problem:** After Fix 2, output was correct but performance dropped to 1.3 tokens/s (from 11+ tokens/s). Log showed 39,624 evictions!
+
+**Root Cause:** Each layer's experts competed for the same 32 slots (0-31). Layer 0's expert 5 and Layer 1's expert 5 both wanted slot 5, causing 100% cache thrashing between layers.
+
+**Solution (current fix):**
+1. **Layer-aware slot allocation:** `slot_idx = layer_idx * 32 + local_expert_id`
+   - Layer 0's experts → slots 0-31
+   - Layer 1's experts → slots 32-63
+   - Layer 23's experts → slots 736-767
+
+2. **New method `get_weight_buffer_for_layer()`:** Creates a subbuffer view starting at the layer's offset
+   ```cpp
+   size_t byte_offset = layer_idx * 32 * expert_size;
+   return engine.create_subbuffer(buffer, layout, byte_offset);
+   ```
+
+3. **Updated `moe_gemm.cpp`:** Now calls `get_weight_buffer_for_layer(layer_idx)` instead of `get_weight_buffer()`
+
+**Code Changes (`moe_expert_weight_manager.cpp`):**
+```cpp
+// Layer-aware slot calculation
+size_t layer_base_slot = layer_idx * 32;
+size_t slot_idx = layer_base_slot + local_expert_id;
+
+// Handle buffer overflow with LRU fallback
+if (slot_idx >= max_slots) {
+    slot_idx = find_available_slot(is_up_projection);
+}
+```
+
+**Code Changes (`moe_expert_weight_manager.cpp` - new method):**
+```cpp
+cldnn::memory::ptr MoEExpertWeightManager::get_weight_buffer_for_layer(uint32_t layer_idx, bool is_up_projection) const {
+    auto& full_buffer = is_up_projection ? m_up_weight_buffer : m_down_weight_buffer;
+    
+    // Each layer gets 32 slots, so offset = layer_idx * 32 * expert_size
+    size_t expert_size = is_up_projection ? m_header.expert_up_weight_size : m_header.expert_down_weight_size;
+    size_t byte_offset = layer_idx * 32 * expert_size;
+    size_t subbuffer_size = std::min(32 * expert_size, full_buffer->size() - byte_offset);
+    
+    cldnn::layout subbuffer_layout({static_cast<int64_t>(subbuffer_size)}, cldnn::data_types::u8, cldnn::format::bfyx);
+    return m_engine.create_subbuffer(*full_buffer, subbuffer_layout, byte_offset);
+}
+```
+
+### Verification Results (768 resident experts)
+
+| Metric | Before Fix | After Fix |
+|--------|------------|-----------|
+| **Output Quality** | Garbage characters | ✅ Correct coherent text |
+| **Throughput** | 1.3 tokens/s | 11.55 tokens/s |
+| **Cache Hit Rate** | ~0% (thrashing) | 93.36% |
+| **Evictions** | 39,624 | 0 |
+| **TPOT** | 748 ms/token | 86.58 ms/token |
+
+**Log Evidence (kernel using OTD buffer):**
+```
+[MOE-OTD] get_arguments: OTD OVERRIDE - Replacing weight input with OTD buffer
+[MOE-OTD] get_arguments: Weight input REPLACED with OTD buffer successfully
+[MOE-OTD] get_weight_buffer_for_layer: layer=23, byte_offset=3052339200, subbuffer_size=132710400
+[MOE-OTD] Expert 743 (local=7) already loaded at slot 743, updating access time
+```
+
+---
+
 ## References
 
 - **OpenVINO Source:** `C:\working\gpt-oss\openvino-2025.4.1\openvino`
