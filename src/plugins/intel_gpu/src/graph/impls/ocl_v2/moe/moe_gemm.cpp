@@ -16,11 +16,24 @@
 #include "moe_gemm_base.hpp"
 #include "moe_gemm_inst.h"
 #include "ocl_v2/utils/fused_ops_jitter.hpp"
+#include "intel_gpu/runtime/debug_configuration.hpp"
 
 #include <iostream>
+#include <cstdlib>
 
-// OTD Debug logging
-#define MOE_OTD_LOG(msg) std::cout << "[MOE-OTD] " << msg << std::endl
+// OTD Debug logging - controlled by OV_MOE_OTD_DEBUG environment variable
+// Set OV_MOE_OTD_DEBUG=1 to enable MOE OTD debug output, unset or 0 to disable
+static bool moe_otd_debug_enabled() {
+    static bool initialized = false;
+    static bool enabled = false;
+    if (!initialized) {
+        const char* env = std::getenv("OV_MOE_OTD_DEBUG");
+        enabled = env && (std::string(env) == "1" || std::string(env) == "true");
+        initialized = true;
+    }
+    return enabled;
+}
+#define MOE_OTD_LOG(msg) if (moe_otd_debug_enabled()) std::cout << "[MOE-OTD] " << msg << std::endl
 
 namespace ov::intel_gpu::ocl {
 namespace {

@@ -25,11 +25,24 @@
 #include "openvino/pass/pattern/matcher.hpp"
 #include "openvino/pass/pattern/op/wrap_type.hpp"
 #include "transformations/utils/utils.hpp"
+#include "openvino/util/env_util.hpp"
 
 #include <iostream>
+#include <cstdlib>
 
-// MoE OTD Debug logging
-#define MOE_OTD_LOG(msg) std::cout << "[MOE-OTD] " << msg << std::endl
+// MoE OTD Debug logging - controlled by OV_MOE_OTD_DEBUG environment variable
+// Set OV_MOE_OTD_DEBUG=1 to enable MOE OTD debug output, unset or 0 to disable
+static bool moe_otd_debug_enabled() {
+    static bool initialized = false;
+    static bool enabled = false;
+    if (!initialized) {
+        const char* env = std::getenv("OV_MOE_OTD_DEBUG");
+        enabled = env && (std::string(env) == "1" || std::string(env) == "true");
+        initialized = true;
+    }
+    return enabled;
+}
+#define MOE_OTD_LOG(msg) if (moe_otd_debug_enabled()) std::cout << "[MOE-OTD] " << msg << std::endl
 
 using namespace ov::pass;
 ov::pass::FuseVectorizedMOE2GEMM::FuseVectorizedMOE2GEMM() {
