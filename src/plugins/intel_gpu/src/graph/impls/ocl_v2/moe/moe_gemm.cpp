@@ -78,6 +78,10 @@ public:
     MoEOTDConfig m_otd_config;
     uint32_t m_otd_layer_idx = 0;
     bool m_otd_is_up_projection = true;
+    
+    // OTD buffer cache - stores the loaded weight buffer for use during kernel execution
+    // This is set by load_otd_experts_if_needed() and used by get_arguments()
+    mutable cldnn::memory::ptr m_otd_weight_buffer = nullptr;
 
     explicit MoEGemmImpl() : PrimitiveImplOCL(MoEGemm::get_type_info_static()) {
         MOE_OTD_LOG("MoEGemmImpl: Default constructor called (WARNING: OTD config NOT initialized!)");
@@ -160,6 +164,31 @@ public:
         PrimitiveImplOCL::update(inst, impl_params);
         inst.update_shape_info_tensor(impl_params);
         update_rt_params(inst);
+    }
+
+    /// @brief Override get_arguments to replace weight input with OTD buffer when OTD is enabled
+    /// This is the CRITICAL connection between the OTD loaded weights and kernel execution
+    [[nodiscard]] cldnn::kernel_arguments_data get_arguments(const cldnn::primitive_inst& instance) const override {
+        // Get base arguments from parent class
+        cldnn::kernel_arguments_data args = PrimitiveImplOCL::get_arguments(instance);
+        
+        // If OTD is enabled and we have a cached weight buffer, replace the weight input
+        if (m_otd_enabled && m_otd_weight_buffer) {
+            MOE_OTD_LOG("get_arguments: OTD OVERRIDE - Replacing weight input with OTD buffer");
+            MOE_OTD_LOG("get_arguments:   Layer=" << m_otd_layer_idx 
+                        << ", projection=" << (m_otd_is_up_projection ? "up" : "down"));
+            MOE_OTD_LOG("get_arguments:   Original weight buffer: " << (void*)args.inputs[moe_gemm::MoEGemmInputIdx::WEIGHT].get()
+                        << " (size=" << (args.inputs[moe_gemm::MoEGemmInputIdx::WEIGHT] ? args.inputs[moe_gemm::MoEGemmInputIdx::WEIGHT]->size() : 0) << ")");
+            MOE_OTD_LOG("get_arguments:   OTD weight buffer: " << (void*)m_otd_weight_buffer.get()
+                        << " (size=" << m_otd_weight_buffer->size() << ")");
+            
+            // Replace the weight input with the OTD buffer containing loaded experts
+            args.inputs[moe_gemm::MoEGemmInputIdx::WEIGHT] = m_otd_weight_buffer;
+            
+            MOE_OTD_LOG("get_arguments: Weight input REPLACED with OTD buffer successfully");
+        }
+        
+        return args;
     }
 
     /// @brief Load required experts from disk if OTD is enabled
@@ -270,6 +299,13 @@ public:
         MOE_OTD_LOG("load_otd_experts_if_needed: [11] Calling otd_manager->load_experts() with GLOBAL expert IDs...");
         otd_manager->load_experts(m_otd_layer_idx, global_expert_ids, stream, m_otd_is_up_projection);
         MOE_OTD_LOG("load_otd_experts_if_needed: [12] otd_manager->load_experts() RETURNED");
+        
+        // CRITICAL FIX: Cache the OTD weight buffer for use in get_arguments()
+        // This connects the loaded weights to the kernel execution path
+        m_otd_weight_buffer = otd_manager->get_weight_buffer(m_otd_is_up_projection);
+        MOE_OTD_LOG("load_otd_experts_if_needed: [13] Cached OTD weight buffer: " << (void*)m_otd_weight_buffer.get()
+                    << " (size=" << (m_otd_weight_buffer ? m_otd_weight_buffer->size() : 0) << " bytes)");
+        
         MOE_OTD_LOG("<<< load_otd_experts_if_needed: EXIT (success)");
     }
 
