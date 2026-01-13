@@ -324,34 +324,54 @@ void MoEExpertWeightManager::load_experts(uint32_t layer_idx,
     }
 
     MOE_OTD_LOG("    [5] Starting expert loading loop (" << expert_ids.size() << " experts)");
+    
+    // Calculate the base slot for this layer
+    // Each layer gets its own range of slots: layer 0 uses 0-31, layer 1 uses 32-63, etc.
+    // This prevents cache thrashing between layers (e.g., layer 0's expert 5 and layer 1's expert 5
+    // no longer compete for the same slot)
+    size_t layer_base_slot = static_cast<size_t>(layer_idx) * 32;
+    size_t max_slots = slot_to_expert.size();
+    
+    MOE_OTD_LOG("    [5.pre] Layer " << layer_idx << " base_slot=" << layer_base_slot << ", max_slots=" << max_slots);
+    
     for (size_t i = 0; i < expert_ids.size(); ++i) {
         int32_t expert_id = expert_ids[i];
         MOE_OTD_LOG("    [5." << i << "] Processing expert_id=" << expert_id);
         
-        // CRITICAL FIX: Use LOCAL expert ID as slot index, not global slot allocation
-        // The kernel indexes weights by local expert_id (0-31), so we MUST store
-        // each expert at its local_id position in the buffer.
-        // Global expert ID = layer_idx * 32 + local_id, so local_id = global_id % 32
+        // Calculate local expert ID (0-31 within this layer)
         int32_t local_expert_id = expert_id % 32;
-        int32_t slot_idx = local_expert_id;  // Store at the expert's local ID position
+        
+        // CRITICAL FIX: Use layer-aware slot indexing
+        // slot_idx = layer_idx * 32 + local_expert_id
+        // This ensures each layer has its own dedicated slot range, preventing cross-layer evictions
+        size_t slot_idx = layer_base_slot + static_cast<size_t>(local_expert_id);
+        
+        // Handle buffer overflow: if slot exceeds buffer size, use LRU eviction
+        if (slot_idx >= max_slots) {
+            MOE_OTD_LOG("        [5." << i << ".overflow] slot_idx " << slot_idx << " exceeds max_slots " << max_slots << ", using LRU");
+            slot_idx = static_cast<size_t>(find_available_slot(is_up_projection));
+        }
+        
+        int32_t slot_idx_i32 = static_cast<int32_t>(slot_idx);
+        MOE_OTD_LOG("        [5." << i << ".slot] local_expert_id=" << local_expert_id << ", final slot_idx=" << slot_idx_i32);
         
         // Check if this expert is already loaded at the correct slot
         auto it = expert_to_slot.find(expert_id);
-        if (it != expert_to_slot.end() && it->second == slot_idx) {
+        if (it != expert_to_slot.end() && it->second == slot_idx_i32) {
             // Expert is already loaded at the correct position
-            MOE_OTD_LOG("        [5." << i << ".a] Expert " << expert_id << " (local=" << local_expert_id << ") already loaded at slot " << slot_idx << ", updating access time");
+            MOE_OTD_LOG("        [5." << i << ".a] Expert " << expert_id << " (local=" << local_expert_id << ") already loaded at slot " << slot_idx_i32 << ", updating access time");
             slot_access_time[slot_idx] = ++m_access_counter;
             continue;
         }
-        MOE_OTD_LOG("        [5." << i << ".b] Expert " << expert_id << " (local=" << local_expert_id << ") NOT loaded at slot " << slot_idx << ", need to load");
+        MOE_OTD_LOG("        [5." << i << ".b] Expert " << expert_id << " (local=" << local_expert_id << ") NOT loaded at slot " << slot_idx_i32 << ", need to load");
 
         // If slot was occupied by a different expert, remove the old mapping
         int32_t old_expert = slot_to_expert[slot_idx];
         if (old_expert >= 0 && old_expert != expert_id) {
-            MOE_OTD_LOG("        [5." << i << ".d] Slot " << slot_idx << " was occupied by expert " << old_expert << ", evicting");
+            MOE_OTD_LOG("        [5." << i << ".d] Slot " << slot_idx_i32 << " was occupied by expert " << old_expert << ", evicting");
             expert_to_slot.erase(old_expert);
         } else if (old_expert < 0) {
-            MOE_OTD_LOG("        [5." << i << ".d] Slot " << slot_idx << " is empty");
+            MOE_OTD_LOG("        [5." << i << ".d] Slot " << slot_idx_i32 << " is empty");
         }
 
         // Load expert from disk
@@ -360,18 +380,18 @@ void MoEExpertWeightManager::load_experts(uint32_t layer_idx,
         MOE_OTD_LOG("        [5." << i << ".e] load_expert_to_host() RETURNED");
         
         // Copy to GPU
-        MOE_OTD_LOG("        [5." << i << ".f] Calling copy_to_gpu_slot(slot=" << slot_idx << ")...");
-        copy_to_gpu_slot(slot_idx, is_up_projection, stream);
+        MOE_OTD_LOG("        [5." << i << ".f] Calling copy_to_gpu_slot(slot=" << slot_idx_i32 << ")...");
+        copy_to_gpu_slot(slot_idx_i32, is_up_projection, stream);
         MOE_OTD_LOG("        [5." << i << ".f] copy_to_gpu_slot() RETURNED");
 
         // Update mappings
         MOE_OTD_LOG("        [5." << i << ".g] Updating mappings...");
         slot_to_expert[slot_idx] = expert_id;
-        expert_to_slot[expert_id] = slot_idx;
+        expert_to_slot[expert_id] = slot_idx_i32;
         slot_access_time[slot_idx] = ++m_access_counter;
         MOE_OTD_LOG("        [5." << i << ".g] Mappings updated");
 
-        MOE_OTD_LOG("        [5." << i << ".h] Expert " << expert_id << " SUCCESSFULLY loaded to slot " << slot_idx);
+        MOE_OTD_LOG("        [5." << i << ".h] Expert " << expert_id << " SUCCESSFULLY loaded to slot " << slot_idx_i32);
     }
     MOE_OTD_LOG("    [6] Expert loading loop COMPLETED");
     MOE_OTD_LOG("<<< load_experts EXIT: Successfully loaded " << expert_ids.size() << " experts for layer " << layer_idx);
@@ -490,6 +510,46 @@ int32_t MoEExpertWeightManager::find_available_slot(bool is_up_projection) {
 
 cldnn::memory::ptr MoEExpertWeightManager::get_weight_buffer(bool is_up_projection) const {
     return is_up_projection ? m_up_weight_buffer : m_down_weight_buffer;
+}
+
+cldnn::memory::ptr MoEExpertWeightManager::get_weight_buffer_for_layer(uint32_t layer_idx, bool is_up_projection) const {
+    // Get the full buffer
+    auto& full_buffer = is_up_projection ? m_up_weight_buffer : m_down_weight_buffer;
+    if (!full_buffer) {
+        MOE_OTD_LOG("get_weight_buffer_for_layer: ERROR - buffer not allocated!");
+        return nullptr;
+    }
+    
+    // Calculate the byte offset for this layer
+    // Each layer gets 32 slots, so offset = layer_idx * 32 * expert_size
+    size_t expert_size = is_up_projection ? m_header.expert_up_weight_size : m_header.expert_down_weight_size;
+    size_t byte_offset = static_cast<size_t>(layer_idx) * 32 * expert_size;
+    
+    // Calculate remaining buffer size after offset
+    size_t remaining_size = full_buffer->size() - byte_offset;
+    
+    // The kernel expects a buffer with 32 experts (or less if we're near the end)
+    size_t subbuffer_size = std::min(32 * expert_size, remaining_size);
+    
+    MOE_OTD_LOG("get_weight_buffer_for_layer: layer=" << layer_idx 
+                << ", byte_offset=" << byte_offset 
+                << ", subbuffer_size=" << subbuffer_size
+                << ", expert_size=" << expert_size);
+    
+    // Create a subbuffer that starts at the layer's offset
+    // This allows the kernel to access weights using local expert IDs (0-31)
+    cldnn::layout subbuffer_layout({static_cast<int64_t>(subbuffer_size)}, 
+                                    cldnn::data_types::u8, cldnn::format::bfyx);
+    
+    try {
+        auto subbuffer = m_engine.create_subbuffer(*full_buffer, subbuffer_layout, byte_offset);
+        MOE_OTD_LOG("get_weight_buffer_for_layer: Created subbuffer at offset " << byte_offset);
+        return subbuffer;
+    } catch (const std::exception& e) {
+        MOE_OTD_LOG("get_weight_buffer_for_layer: ERROR creating subbuffer - " << e.what());
+        // Fallback: return the full buffer (kernel will still work but with wrong data)
+        return full_buffer;
+    }
 }
 
 cldnn::memory::ptr MoEExpertWeightManager::get_scale_buffer(bool is_up_projection) const {

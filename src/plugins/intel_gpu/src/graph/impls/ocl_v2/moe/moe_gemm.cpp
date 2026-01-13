@@ -300,10 +300,12 @@ public:
         otd_manager->load_experts(m_otd_layer_idx, global_expert_ids, stream, m_otd_is_up_projection);
         MOE_OTD_LOG("load_otd_experts_if_needed: [12] otd_manager->load_experts() RETURNED");
         
-        // CRITICAL FIX: Cache the OTD weight buffer for use in get_arguments()
-        // This connects the loaded weights to the kernel execution path
-        m_otd_weight_buffer = otd_manager->get_weight_buffer(m_otd_is_up_projection);
-        MOE_OTD_LOG("load_otd_experts_if_needed: [13] Cached OTD weight buffer: " << (void*)m_otd_weight_buffer.get()
+        // CRITICAL FIX: Get the LAYER-SPECIFIC weight buffer (subbuffer view)
+        // This returns a subbuffer starting at layer_idx * 32 * expert_size,
+        // allowing the kernel to access weights using local expert IDs (0-31)
+        m_otd_weight_buffer = otd_manager->get_weight_buffer_for_layer(m_otd_layer_idx, m_otd_is_up_projection);
+        MOE_OTD_LOG("load_otd_experts_if_needed: [13] Cached OTD weight buffer for layer " << m_otd_layer_idx 
+                    << ": " << (void*)m_otd_weight_buffer.get()
                     << " (size=" << (m_otd_weight_buffer ? m_otd_weight_buffer->size() : 0) << " bytes)");
         
         MOE_OTD_LOG("<<< load_otd_experts_if_needed: EXIT (success)");

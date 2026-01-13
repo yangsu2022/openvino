@@ -99,6 +99,14 @@ public:
     /// @return Pointer to GPU memory
     cldnn::memory::ptr get_weight_buffer(bool is_up_projection) const;
 
+    /// @brief Get the GPU memory buffer view for a specific layer
+    /// @param layer_idx The layer index (0-based)
+    /// @param is_up_projection true for up-projection, false for down-projection
+    /// @return Pointer to GPU memory subbuffer starting at the layer's offset
+    /// @note This returns a subbuffer view that starts at layer_idx * 32 * expert_size,
+    ///       allowing the kernel to access experts using local expert IDs (0-31)
+    cldnn::memory::ptr get_weight_buffer_for_layer(uint32_t layer_idx, bool is_up_projection) const;
+
     /// @brief Get the GPU memory buffer containing loaded expert scales
     cldnn::memory::ptr get_scale_buffer(bool is_up_projection) const;
 
